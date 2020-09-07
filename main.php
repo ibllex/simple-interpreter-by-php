@@ -8,6 +8,8 @@ const SIP_PLUS = 'PLUS';
 const SIP_MINUS = 'MINUS';
 const SIP_MUL = 'MUL';
 const SIP_DIV = 'DIV';
+const SIP_LPAREN = '(';
+const SIP_RPAREN = ')';
 const SIP_EOF = 'EOF';
 const SIP_WHITESPACE = ' ';
 
@@ -137,6 +139,16 @@ class Lexer
                 return new Token(SIP_DIV, '/');
             }
 
+            if ($this->current_char == '(') {
+                $this->advance();
+                return new Token(SIP_LPAREN, '(');
+            }
+
+            if ($this->current_char == ')') {
+                $this->advance();
+                return new Token(SIP_RPAREN, ')');
+            }
+
             $this->error();
         }
 
@@ -178,18 +190,25 @@ class Interpreter
     }
 
     /**
-     * return an INTEGER token value
-     * factor: INTEGER
+     * factor: INTEGER | LPAREN expr RPAREN
      */
     public function factor()
     {
         $token = $this->current_token;
-        $this->eat(SIP_INTEGER);
-        return $token->value;
+        if ($token->type == SIP_INTEGER) {
+            $this->eat(SIP_INTEGER);
+            return $token->value;
+        } elseif ($token->type == SIP_LPAREN) {
+            $this->eat(SIP_LPAREN);
+            $result = $this->expr();
+            $this->eat(SIP_RPAREN);
+            return $result;
+        }
     }
 
     /**
      * term     : factor ((MUL/DIV) factor)*
+     * factor   : INTEGER | LPAREN expr RPAREN
      */
     public function term()
     {
@@ -213,7 +232,7 @@ class Interpreter
      * arithmetic expression parser / interpreter
      * expr     : term ((PLUS/MINUS) term)*
      * term     : factor ((MUL/DIV) factor)*
-     * factor   : INTEGER
+     * factor   : INTEGER | LPAREN expr RPAREN
      */
     public function expr()
     {

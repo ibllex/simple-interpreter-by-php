@@ -149,6 +149,13 @@ class Interpreter
             $this->error();
         }
     }
+
+    public function term()
+    {
+        $token = $this->current_token;
+        $this->eat(SIP_INTEGER);
+        return $token->value;
+    }
     
     /**
      * expr is INTEGER PLUSH INTEGER
@@ -156,35 +163,22 @@ class Interpreter
      */
     public function expr()
     {
+        // get first valid integer
         $this->current_token = $this->get_next_token();
-        
-        // we expect the current token to be an integer
-        $left = $this->current_token;
-        $this->eat(SIP_INTEGER);
-        
-        // we expect the current token to be either a '+' or '-' token
-        $op = $this->current_token;
-        if ($op->type == SIP_PLUS) {
-            $this->eat(SIP_PLUS);
-        } else {
-            $this->eat(SIP_MINUS);
+        $result = $this->term();
+
+        while (in_array($this->current_token->type, [SIP_PLUS, SIP_MINUS])) {
+            $token = $this->current_token;
+            if ($token->type == SIP_PLUS) {
+                $this->eat(SIP_PLUS);
+                $result += $this->term();
+            } elseif ($token->type == SIP_MINUS) {
+                $this->eat(SIP_MINUS);
+                $result -= $this->term();
+            }
         }
-        
-        // we expect the current token to be an integer
-        $right = $this->current_token;
-        $this->eat(SIP_INTEGER);
-        
-        // after the above call the this.current_token is set to EOF token
-        
-        // at this point INTEGET PLUS INTEGER sequence of tokens has been
-        // successfully found and the method can just return the result
-        // of adding or subtracting two integers,
-        // thus effectively interpreting client input
-        if ($op->type == SIP_PLUS) {
-            return $left->value + $right->value;
-        }
-        
-        return $left->value - $right->value;
+
+        return $result;
     }
 }
 

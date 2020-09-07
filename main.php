@@ -1,8 +1,13 @@
+#!/usr/bin/env php
+
 <?php
 
-const _INTEGER = 'INTEGER';
-const _PLUS = 'PLUS';
-const _EOF = 'EOF';
+// SIP is abbreviation of 'simple interpreter by php' or just 'simple'
+const SIP_INTEGER = 'INTEGER';
+const SIP_PLUS = 'PLUS';
+const SIP_MINUS = 'MINUS';
+const SIP_EOF = 'EOF';
+const SIP_WHITESPACE = ' ';
 
 class Token
 {
@@ -32,21 +37,59 @@ class Token
 
 class Interpreter
 {
-    // client string input, e.g. "3+5"
+    // client string input, e.g. "3+5", "12 - 8", "12 + 19", etc
     private $text;
     // pos is an index into text
     private $pos = 0;
     // current token instance
     private $current_token;
+    // current char
+    private $current_char;
 
     public function __construct($text)
     {
         $this->text = trim($text);
+        $this->current_char = $this->text[$this->pos];
     }
     
     public function error()
     {
         throw new \Exception('Error parsing input');
+    }
+
+    /**
+     * advance the 'pos' pointer and set the current_char variable
+     */
+    public function advance()
+    {
+        $this->pos++;
+        if ($this->pos > strlen($this->text) - 1) {
+            // indicates the end of input
+            $this->current_char = null;
+        } else {
+            $this->current_char = $this->text[$this->pos];
+        }
+    }
+
+    public function skip_whitespace()
+    {
+        while ($this->current_char != null && $this->current_char == SIP_WHITESPACE) {
+            $this->advance();
+        }
+    }
+
+    /**
+     * return a (multidigit) integer consumed from the input
+     */
+    public function integer()
+    {
+        $result = '';
+        while ($this->current_char != null && is_numeric($this->current_char)) {
+            $result .= $this->current_char;
+            $this->advance();
+        }
+
+        return (int) $result;
     }
     
     /**
@@ -57,37 +100,39 @@ class Interpreter
      */
     public function get_next_token()
     {
-        $text = $this->text;
-        
-        // is this.pos index pass the end of this.test?
-        // if so, then return the EOF token because there is no more
-        // input left to convert into token
-        if ($this->pos > strlen($text) - 1) {
-            return new Token(_EOF, null);
+        while ($this->current_char != null) {
+            // if the current character is a whitespace then skip
+            // consecutive whitespaces
+            if ($this->current_char == SIP_WHITESPACE) {
+                $this->skip_whitespace();
+                continue;
+            }
+
+            // if the current character is a digit then get multidigit
+            // consumed from the input, convert it into an INTEGER token
+            // and return the INTEGER token
+            if (is_numeric($this->current_char)) {
+                return new Token(SIP_INTEGER, $this->integer());
+            }
+            
+            // if the current character is '+' then create a
+            // PLUST token, increment this.pos and return PLUS token
+            if ($this->current_char == '+') {
+                $this->advance();
+                return new Token(SIP_PLUS, '+');
+            }
+
+            // if the current character is '-' then create a
+            // MINUS token, increment this.pos and return MINUS token
+            if ($this->current_char == '-') {
+                $this->advance();
+                return new Token(SIP_MINUS, '-');
+            }
+
+            $this->error();
         }
-        
-        // get a character at the position this.pos and decide
-        // what token to create based on the single character
-        $current_char = $text[$this->pos];
-        
-        // if the current character is a digit then convert it into
-        // integer, create an INTEGER token, increment this.pos after
-        // the integer and return the INTEGER token
-        if (is_numeric($current_char)) {
-            $token = new Token(_INTEGER, (int) $current_char);
-            $this->pos++;
-            return $token;
-        }
-        
-        // if the current character is '+' then create a
-        // PLUST token, increment this.pos and return PLUS token
-        if ($current_char == '+') {
-            $token = new Token(_PLUS, $current_char);
-            $this->pos++;
-            return $token;
-        }
-        
-        $this->error();
+
+        return new Token(SIP_EOF, null);
     }
     
     /**
@@ -107,29 +152,39 @@ class Interpreter
     
     /**
      * expr is INTEGER PLUSH INTEGER
+     * expr is INTEGER MINUS INTEGER
      */
     public function expr()
     {
         $this->current_token = $this->get_next_token();
         
-        // we expect the current token to be single-digit integer
+        // we expect the current token to be an integer
         $left = $this->current_token;
-        $this->eat(_INTEGER);
+        $this->eat(SIP_INTEGER);
         
-        // we expect the current token to be '+' token
+        // we expect the current token to be either a '+' or '-' token
         $op = $this->current_token;
-        $this->eat(_PLUS);
+        if ($op->type == SIP_PLUS) {
+            $this->eat(SIP_PLUS);
+        } else {
+            $this->eat(SIP_MINUS);
+        }
         
-        // we expect the current token to be single-digit integer
+        // we expect the current token to be an integer
         $right = $this->current_token;
-        $this->eat(_INTEGER);
+        $this->eat(SIP_INTEGER);
         
         // after the above call the this.current_token is set to EOF token
         
         // at this point INTEGET PLUS INTEGER sequence of tokens has been
         // successfully found and the method can just return the result
-        // of adding two integers, thus effectively interpreting client input
-        return $left->value + $right->value;
+        // of adding or subtracting two integers,
+        // thus effectively interpreting client input
+        if ($op->type == SIP_PLUS) {
+            return $left->value + $right->value;
+        }
+        
+        return $left->value - $right->value;
     }
 }
 

@@ -6,6 +6,8 @@
 const SIP_INTEGER = 'INTEGER';
 const SIP_PLUS = 'PLUS';
 const SIP_MINUS = 'MINUS';
+const SIP_MUL = 'MUL';
+const SIP_DIV = 'DIV';
 const SIP_EOF = 'EOF';
 const SIP_WHITESPACE = ' ';
 
@@ -35,7 +37,7 @@ class Token
     }
 }
 
-class Interpreter
+class Lexer
 {
     // client string input, e.g. "3+5", "12 - 8", "12 + 19", etc
     private $text;
@@ -54,7 +56,7 @@ class Interpreter
     
     public function error()
     {
-        throw new \Exception('Error parsing input');
+        throw new \Exception('Invalid character');
     }
 
     /**
@@ -115,18 +117,24 @@ class Interpreter
                 return new Token(SIP_INTEGER, $this->integer());
             }
             
-            // if the current character is '+' then create a
-            // PLUST token, increment this.pos and return PLUS token
             if ($this->current_char == '+') {
                 $this->advance();
                 return new Token(SIP_PLUS, '+');
             }
 
-            // if the current character is '-' then create a
-            // MINUS token, increment this.pos and return MINUS token
             if ($this->current_char == '-') {
                 $this->advance();
                 return new Token(SIP_MINUS, '-');
+            }
+
+            if ($this->current_char == '*') {
+                $this->advance();
+                return new Token(SIP_MUL, '*');
+            }
+
+            if ($this->current_char == '/') {
+                $this->advance();
+                return new Token(SIP_DIV, '/');
             }
 
             $this->error();
@@ -134,7 +142,26 @@ class Interpreter
 
         return new Token(SIP_EOF, null);
     }
+}
+
+class Interpreter
+{
+    private $lexer;
+
+    private $current_token;
     
+    public function __construct(Lexer $lexer)
+    {
+        $this->lexer = $lexer;
+        // set current token to the first token taken from the input
+        $this->current_token = $lexer->get_next_token();
+    }
+    
+    public function error()
+    {
+        throw new \Exception('Invalid syntax');
+    }
+
     /**
      * compare the current token type with the passed token
      * type and if thet match then "eat" the current token,
@@ -144,27 +171,52 @@ class Interpreter
     public function eat($token_type)
     {
         if ($this->current_token->type == $token_type) {
-            $this->current_token = $this->get_next_token();
+            $this->current_token = $this->lexer->get_next_token();
         } else {
             $this->error();
         }
     }
 
-    public function term()
+    /**
+     * return an INTEGER token value
+     * factor: INTEGER
+     */
+    public function factor()
     {
         $token = $this->current_token;
         $this->eat(SIP_INTEGER);
         return $token->value;
     }
-    
+
     /**
-     * expr is INTEGER PLUSH INTEGER
-     * expr is INTEGER MINUS INTEGER
+     * term     : factor ((MUL/DIV) factor)*
+     */
+    public function term()
+    {
+        $result = $this->factor();
+
+        while (in_array($this->current_token->type, [SIP_MUL, SIP_DIV])) {
+            $token = $this->current_token;
+            if ($token->type == SIP_MUL) {
+                $this->eat(SIP_MUL);
+                $result *= $this->factor();
+            } elseif ($token->type == SIP_DIV) {
+                $this->eat(SIP_DIV);
+                $result /= $this->factor();
+            }
+        }
+        
+        return $result;
+    }
+
+    /**
+     * arithmetic expression parser / interpreter
+     * expr     : term ((PLUS/MINUS) term)*
+     * term     : factor ((MUL/DIV) factor)*
+     * factor   : INTEGER
      */
     public function expr()
     {
-        // get first valid integer
-        $this->current_token = $this->get_next_token();
         $result = $this->term();
 
         while (in_array($this->current_token->type, [SIP_PLUS, SIP_MINUS])) {
@@ -186,7 +238,8 @@ while (true) {
     try {
         fwrite(STDOUT, 'calc> ');
         $input = fgets(STDIN);
-        $interpreter = new Interpreter($input);
+        $lexer = new Lexer($input);
+        $interpreter = new Interpreter($lexer);
         echo $interpreter->expr() . PHP_EOL;
         unset($interpreter);
     } catch (Exception $ex) {

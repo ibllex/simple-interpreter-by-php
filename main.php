@@ -3,6 +3,12 @@
 <?php
 
 // SIP is abbreviation of 'simple interpreter by php' or just 'simple'
+
+/**
+ * LEXER
+ */
+
+// Token types
 const SIP_INTEGER = 'INTEGER';
 const SIP_PLUS = 'PLUS';
 const SIP_MINUS = 'MINUS';
@@ -45,8 +51,6 @@ class Lexer
     private $text;
     // pos is an index into text
     private $pos = 0;
-    // current token instance
-    private $current_token;
     // current char
     private $current_char;
 
@@ -156,12 +160,63 @@ class Lexer
     }
 }
 
-class Interpreter
+/**
+ * PARSER
+ */
+
+class AST
+{
+    //
+}
+
+class BinOp extends AST
+{
+    private $left;
+
+    private $token;
+    
+    private $op;
+
+    private $right;
+
+    public function __construct(AST $left, Token $op, AST $right)
+    {
+        $this->left = $left;
+        $this->token = $op;
+        $this->op = $op;
+        $this->right = $right;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
+class Num extends AST
+{
+    private $token;
+
+    private $value;
+
+    public function __construct(Token $token)
+    {
+        $this->token = $token;
+        $this->value = $token->value;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
+class Parser
 {
     private $lexer;
 
     private $current_token;
-    
+
     public function __construct(Lexer $lexer)
     {
         $this->lexer = $lexer;
@@ -173,7 +228,7 @@ class Interpreter
     {
         throw new \Exception('Invalid syntax');
     }
-
+    
     /**
      * compare the current token type with the passed token
      * type and if thet match then "eat" the current token,
@@ -188,7 +243,7 @@ class Interpreter
             $this->error();
         }
     }
-
+    
     /**
      * factor: INTEGER | LPAREN expr RPAREN
      */
@@ -197,12 +252,12 @@ class Interpreter
         $token = $this->current_token;
         if ($token->type == SIP_INTEGER) {
             $this->eat(SIP_INTEGER);
-            return $token->value;
+            return new Num($token);
         } elseif ($token->type == SIP_LPAREN) {
             $this->eat(SIP_LPAREN);
-            $result = $this->expr();
+            $node = $this->expr();
             $this->eat(SIP_RPAREN);
-            return $result;
+            return $node;
         }
     }
 
@@ -212,20 +267,20 @@ class Interpreter
      */
     public function term()
     {
-        $result = $this->factor();
+        $node = $this->factor();
 
         while (in_array($this->current_token->type, [SIP_MUL, SIP_DIV])) {
             $token = $this->current_token;
             if ($token->type == SIP_MUL) {
                 $this->eat(SIP_MUL);
-                $result *= $this->factor();
             } elseif ($token->type == SIP_DIV) {
                 $this->eat(SIP_DIV);
-                $result /= $this->factor();
             }
+            
+            $node = new BinOp($node, $token, $this->factor());
         }
         
-        return $result;
+        return $node;
     }
 
     /**
@@ -236,20 +291,83 @@ class Interpreter
      */
     public function expr()
     {
-        $result = $this->term();
+        $node = $this->term();
 
         while (in_array($this->current_token->type, [SIP_PLUS, SIP_MINUS])) {
             $token = $this->current_token;
             if ($token->type == SIP_PLUS) {
                 $this->eat(SIP_PLUS);
-                $result += $this->term();
             } elseif ($token->type == SIP_MINUS) {
                 $this->eat(SIP_MINUS);
-                $result -= $this->term();
             }
+            
+            $node = new BinOp($node, $token, $this->term());
         }
 
-        return $result;
+        return $node;
+    }
+    
+    public function parse()
+    {
+        return $this->expr();
+    }
+}
+
+/**
+ * INTERPRETER
+ */
+
+class NodeVisitor
+{
+    public function visit(AST $node)
+    {
+        $class_name = preg_replace('/\s+/u', '', ucwords(get_class($node)));
+        $method_name = 'visit_' . strtolower(preg_replace('/(.)(?=[A-Z])/u', '$1_', $class_name));
+        
+        if (! method_exists($this, $method_name)) {
+            $this->generic_visit($method_name);
+        }
+        
+        return $this->{$method_name}($node);
+    }
+    
+    private function generic_visit($method_name)
+    {
+        throw new \Exception('No ' . $method_name . ' method.');
+    }
+}
+
+class Interpreter extends NodeVisitor
+{
+    private $parser;
+    
+    public function __construct(Parser $parser)
+    {
+        $this->parser = $parser;
+    }
+    
+    public function visit_bin_op(BinOp $node)
+    {
+        if ($node->op->type == SIP_PLUS) {
+            return $this->visit($node->left) + $this->visit($node->right);
+        } elseif ($node->op->type == SIP_MINUS) {
+            return $this->visit($node->left) - $this->visit($node->right);
+        } elseif ($node->op->type == SIP_MUL) {
+            return $this->visit($node->left) * $this->visit($node->right);
+        } elseif ($node->op->type == SIP_DIV) {
+            return $this->visit($node->left) / $this->visit($node->right);
+        }
+    }
+    
+    public function visit_num(Num $node)
+    {
+        return $node->value;
+    }
+    
+    public function interpret()
+    {
+        $tree = $this->parser->parse();
+        return $this->visit($tree);
     }
 }
 
@@ -258,8 +376,9 @@ while (true) {
         fwrite(STDOUT, 'calc> ');
         $input = fgets(STDIN);
         $lexer = new Lexer($input);
-        $interpreter = new Interpreter($lexer);
-        echo $interpreter->expr() . PHP_EOL;
+        $parser = new Parser($lexer);
+        $interpreter = new Interpreter($parser);
+        echo $interpreter->interpret() . PHP_EOL;
         unset($interpreter);
     } catch (Exception $ex) {
         echo $ex->getMessage() . PHP_EOL;

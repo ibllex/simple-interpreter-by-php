@@ -9,21 +9,31 @@
  */
 
 // Token types
+const SIP_INTEGER_CONST = 'INTEGER_CONST';
 const SIP_INTEGER = 'INTEGER';
+const SIP_REAL_CONST = 'REAL_CONST';
+const SIP_REAL = 'REAL';
 const SIP_PLUS = 'PLUS';
 const SIP_MINUS = 'MINUS';
 const SIP_MUL = 'MUL';
 const SIP_DIV = 'DIV';
-const SIP_LPAREN = '(';
-const SIP_RPAREN = ')';
+const SIP_FLOAT_DIV = 'FLOAT_DIV';
+const SIP_COLON = 'COLON';
+const SIP_COMMA = 'COMMA';
+const SIP_LPAREN = 'LPAREN';
+const SIP_RPAREN = 'RPAREN';
 const SIP_BEGIN = 'BEGIN';
 const SIP_END = 'END';
+const SIP_PROGRAM = 'PROGRAM';
+const SIP_VAR = 'VAR';
 const SIP_DOT = 'DOT';
 const SIP_ASSIGN = 'ASSIGN';
 const SIP_SEMI = 'SEMI';
 const SIP_ID = 'ID';
 const SIP_EOF = 'EOF';
-const SIP_WHITESPACE = ' ';
+
+// Global vars
+const SIP_VAR_WHITESPACE = ' ';
 
 class Token
 {
@@ -66,8 +76,13 @@ class Lexer
     {
         $this->text = trim($text);
         $this->current_char = $this->text[$this->pos];
+        $this->reserved_keywords[SIP_PROGRAM] = new Token(SIP_PROGRAM, 'PROGRAM');
+        $this->reserved_keywords[SIP_VAR] = new Token(SIP_VAR, 'VAR');
+        $this->reserved_keywords[SIP_DIV] = new Token(SIP_DIV, 'DIV');
         $this->reserved_keywords[SIP_BEGIN] = new Token(SIP_BEGIN, 'BEGIN');
         $this->reserved_keywords[SIP_END] = new Token(SIP_END, 'END');
+        $this->reserved_keywords[SIP_INTEGER] = new Token(SIP_INTEGER, 'INTEGER');
+        $this->reserved_keywords[SIP_REAL] = new Token(SIP_REAL, 'REAL');
     }
     
     public function error()
@@ -93,23 +108,45 @@ class Lexer
 
     public function skip_whitespace()
     {
-        while ($this->current_char != null && $this->current_char == SIP_WHITESPACE) {
+        while ($this->current_char != null && $this->current_char == SIP_VAR_WHITESPACE) {
             $this->advance();
         }
     }
+    
+    public function skip_comments()
+    {
+        while ($this->current_char != '}') {
+            $this->advance();
+        }
+        
+        // the closing curly brace
+        $this->advance();
+    }
 
     /**
-     * return a (multidigit) integer consumed from the input
+     * return a (multidigit) integer or float consumed from the input
      */
-    public function integer()
+    public function number()
     {
         $result = '';
         while ($this->current_char != null && is_numeric($this->current_char)) {
             $result .= $this->current_char;
             $this->advance();
         }
+        
+        if ($this->current_char == '.') {
+            $result .= $this->current_char;
+            $this->advance();
+            
+            while ($this->current_char != null && is_numeric($this->current_char)) {
+                $result .= $this->current_char;
+                $this->advance();
+            }
+            
+            return new Token(SIP_REAL_CONST, (float) $result);
+        }
 
-        return (int) $result;
+        return new Token(SIP_INTEGER_CONST, (int) $result);
     }
     
     /**
@@ -131,7 +168,7 @@ class Lexer
     public function id()
     {
         $result = '';
-        while ($this->current_char && ctype_alnum($this->current_char)) {
+        while ($this->current_char != null && ctype_alnum($this->current_char)) {
             $result .= $this->current_char;
             $this->advance();
         }
@@ -154,16 +191,29 @@ class Lexer
         while ($this->current_char != null) {
             // if the current character is a whitespace then skip
             // consecutive whitespaces
-            if ($this->current_char == SIP_WHITESPACE) {
+            if ($this->current_char == SIP_VAR_WHITESPACE) {
                 $this->skip_whitespace();
                 continue;
+            }
+            
+            // if the current character is a left curly brace then skip
+            // the comments until right curly brace
+            if ($this->current_char == '{') {
+                $this->advance();
+                $this->skip_comments();
+                continue;
+            }
+            
+            // maybe variable or key words
+            if (ctype_alpha($this->current_char)) {
+                return $this->id();
             }
 
             // if the current character is a digit then get multidigit
             // consumed from the input, convert it into an INTEGER token
-            // and return the INTEGER token
+            // or a REAL token and return the token
             if (is_numeric($this->current_char)) {
-                return new Token(SIP_INTEGER, $this->integer());
+                return $this->number();
             }
             
             if ($this->current_char == '+') {
@@ -183,7 +233,7 @@ class Lexer
 
             if ($this->current_char == '/') {
                 $this->advance();
-                return new Token(SIP_DIV, '/');
+                return new Token(SIP_FLOAT_DIV, '/');
             }
 
             if ($this->current_char == '(') {
@@ -196,13 +246,23 @@ class Lexer
                 return new Token(SIP_RPAREN, ')');
             }
             
-            if (ctype_alpha($this->current_char)) {
-                return $this->id();
+            if ($this->current_char == ":") {
+                
+                // if the next character is '=' then means ':=',
+                // return ASSIGN token
+                if ($this->peek() == "=") {
+                    $this->advance()->advance();
+                    return new Token(SIP_ASSIGN, ':=');
+                }
+
+                $this->advance();
+                // otherwise, return COLON token
+                return new Token(SIP_COLON, ':');
             }
             
-            if ($this->current_char == ":" && $this->peek() == "=") {
-                $this->advance()->advance();
-                return new Token(SIP_ASSIGN, ':=');
+            if ($this->current_char == ',') {
+                $this->advance();
+                return new Token(SIP_COMMA, ',');
             }
             
             if ($this->current_char == ';') {
@@ -291,17 +351,93 @@ class Num extends AST
     }
 }
 
+class Program extends AST
+{
+    private $name;
+
+    private $block;
+
+    public function __construct($name, $block)
+    {
+        $this->name = $name;
+        $this->block = $block;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
+/**
+ * Block AST node holdes declarations and a compound statement
+ */
+class Block extends AST
+{
+    private $declarations;
+    
+    private $compound_statement;
+
+    public function __construct($declarations, $compound_statement)
+    {
+        $this->declarations = $declarations;
+        $this->compound_statement = $compound_statement;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
+/**
+ * VarDecl AST node represents a variable type
+ */
+class VarDecl extends AST
+{
+    private $var_node;
+
+    private $type_node;
+
+    public function __construct(Variable $var_node, Type $type_node)
+    {
+        $this->var_node = $var_node;
+        $this->type_node = $type_node;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
+/**
+ * Type AST node represents a variable type
+ */
+class Type extends AST
+{
+    private $token;
+
+    private $value;
+
+    public function __construct($token)
+    {
+        $this->token = $token;
+        $this->value = $token->value;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
 /**
  * represents a 'BEGIN ... END' block
  */
 class Compound extends AST
 {
     public $children = [];
-
-    public function __construct()
-    {
-        //
-    }
 }
 
 class Assign extends AST
@@ -392,15 +528,93 @@ class Parser
     }
     
     /**
-     * program: compound_statement DOT
+     * program: PROGRAM variable SEMI block DOT
      */
     public function program()
     {
-        $node = $this->compound_statement();
+        $this->eat(SIP_PROGRAM);
+        $var_node = $this->variable();
+        $prog_name = $var_node->value;
+        $this->eat(SIP_SEMI);
+        $block_node = $this->block();
+        $program_node = new Program($prog_name, $block_node);
         $this->eat(SIP_DOT);
-        return $node;
+        return $program_node;
     }
     
+    /**
+     * block: declarations compound_statement
+     */
+    public function block()
+    {
+        $declarations = $this->declarations();
+        $compound_statement_node = $this->compound_statement();
+        $block = new Block($declarations, $compound_statement_node);
+        return $block;
+    }
+    
+    /**
+     * declarations: VAR (variable_declaration SEMI)+ | empty
+     */
+    public function declarations()
+    {
+        $declarations = [];
+        
+        if ($this->current_token->type == SIP_VAR) {
+            $this->eat(SIP_VAR);
+            while ($this->current_token->type == SIP_ID) {
+                $var_decl = $this->variable_declaration();
+                $declarations = array_merge($declarations, $var_decl);
+                $this->eat(SIP_SEMI);
+            }
+        }
+        
+        return $declarations;
+    }
+    
+    /**
+     * variable_declaration: ID (COMMA ID)* COLON type_spec
+     */
+    public function variable_declaration()
+    {
+        // first id
+        $var_nodes = [new Variable($this->current_token)];
+        $this->eat(SIP_ID);
+        
+        // VAR a,b,c,d ... take out b,c,d
+        while ($this->current_token->type == SIP_COMMA) {
+            $this->eat(SIP_COMMA);
+            $var_nodes[] = new Variable($this->current_token);
+            $this->eat(SIP_ID);
+        }
+        
+        $this->eat(SIP_COLON);
+
+        $type_node = $this->type_spec();
+        $var_declarations = [];
+        
+        foreach ($var_nodes as $var_node) {
+            $var_declarations[] = new VarDecl($var_node, $type_node);
+        }
+        
+        return $var_declarations;
+    }
+    
+    /**
+     * type_spec: INTEGER | REAL
+     */
+    public function type_spec()
+    {
+        $token = $this->current_token;
+        if ($this->current_token->type == SIP_INTEGER) {
+            $this->eat(SIP_INTEGER);
+        } else {
+            $this->eat(SIP_REAL);
+        }
+        
+        return new Type($token);
+    }
+
     /**
      * compound_statement: BEGIN statement_list END
      */
@@ -485,7 +699,23 @@ class Parser
     }
 
     /**
-     * factor: (PLUS|MINUS) factor | INTEGER | LPAREN expr RPAREN | variable
+     * term: factor ((MUL/DIV/FLOAT_DIV) factor)*
+     */
+    public function term()
+    {
+        $node = $this->factor();
+
+        while (in_array($this->current_token->type, [SIP_MUL, SIP_DIV, SIP_FLOAT_DIV])) {
+            $token = $this->current_token;
+            $this->eat($token->type);
+            $node = new BinOp($node, $token, $this->factor());
+        }
+        
+        return $node;
+    }
+
+    /**
+     * factor: (PLUS|MINUS) factor | INTEGER_CONST | REAL_CONST | LPAREN expr RPAREN | variable
      */
     public function factor()
     {
@@ -493,8 +723,11 @@ class Parser
         if (in_array($token->type, [SIP_PLUS, SIP_MINUS])) {
             $this->eat($token->type);
             return new UnaryOp($token, $this->factor());
-        } elseif ($token->type == SIP_INTEGER) {
-            $this->eat(SIP_INTEGER);
+        } elseif ($token->type == SIP_INTEGER_CONST) {
+            $this->eat(SIP_INTEGER_CONST);
+            return new Num($token);
+        } elseif ($token->type == SIP_REAL_CONST) {
+            $this->eat(SIP_REAL_CONST);
             return new Num($token);
         } elseif ($token->type == SIP_LPAREN) {
             $this->eat(SIP_LPAREN);
@@ -504,27 +737,6 @@ class Parser
         } else {
             return $this->variable();
         }
-    }
-
-    /**
-     * term: factor ((MUL/DIV) factor)*
-     */
-    public function term()
-    {
-        $node = $this->factor();
-
-        while (in_array($this->current_token->type, [SIP_MUL, SIP_DIV])) {
-            $token = $this->current_token;
-            if ($token->type == SIP_MUL) {
-                $this->eat(SIP_MUL);
-            } elseif ($token->type == SIP_DIV) {
-                $this->eat(SIP_DIV);
-            }
-            
-            $node = new BinOp($node, $token, $this->factor());
-        }
-        
-        return $node;
     }
 
     /**
@@ -600,6 +812,8 @@ class Interpreter extends NodeVisitor
         } elseif ($node->op->type == SIP_MUL) {
             return $this->visit($node->left) * $this->visit($node->right);
         } elseif ($node->op->type == SIP_DIV) {
+            return intdiv($this->visit($node->left), $this->visit($node->right));
+        } elseif ($node->op->type == SIP_FLOAT_DIV) {
             return $this->visit($node->left) / $this->visit($node->right);
         }
     }
@@ -611,6 +825,30 @@ class Interpreter extends NodeVisitor
         }
         
         return $this->visit($op->right);
+    }
+    
+    public function visit_program(Program $node)
+    {
+        $this->visit($node->block);
+    }
+    
+    public function visit_block(Block $node)
+    {
+        foreach ($node->declarations as $declaration) {
+            $this->visit($declaration);
+        }
+        
+        $this->visit($node->compound_statement);
+    }
+    
+    public function visit_var_decl(VarDecl $node)
+    {
+        // do nothing at this time
+    }
+    
+    public function visit_type(Type $node)
+    {
+        // do nothing at this time
     }
 
     public function visit_num(Num $node)
@@ -650,7 +888,7 @@ class Interpreter extends NodeVisitor
     {
         $tree = $this->parser->parse();
         $result = $this->visit($tree);
-        var_dump($this->GLOBAL_SCOPE);
+        print_r($this->GLOBAL_SCOPE);
         return $result;
     }
 }
@@ -663,7 +901,7 @@ class Sip
             try {
                 fwrite(STDOUT, 'sip> ');
                 $input = fgets(STDIN);
-                $this->exec_string("BEGIN {$input} END.");
+                $this->exec_string("PROGRAM interactive; BEGIN {$input} END.");
             } catch (Exception $ex) {
                 echo $ex . PHP_EOL;
             }

@@ -16,6 +16,12 @@ const SIP_MUL = 'MUL';
 const SIP_DIV = 'DIV';
 const SIP_LPAREN = '(';
 const SIP_RPAREN = ')';
+const SIP_BEGIN = 'BEGIN';
+const SIP_END = 'END';
+const SIP_DOT = 'DOT';
+const SIP_ASSIGN = 'ASSIGN';
+const SIP_SEMI = 'SEMI';
+const SIP_ID = 'ID';
 const SIP_EOF = 'EOF';
 const SIP_WHITESPACE = ' ';
 
@@ -53,16 +59,20 @@ class Lexer
     private $pos = 0;
     // current char
     private $current_char;
+    // keywords
+    private $reserved_keywords = [];
 
     public function __construct($text)
     {
         $this->text = trim($text);
         $this->current_char = $this->text[$this->pos];
+        $this->reserved_keywords[SIP_BEGIN] = new Token(SIP_BEGIN, 'BEGIN');
+        $this->reserved_keywords[SIP_END] = new Token(SIP_END, 'END');
     }
     
     public function error()
     {
-        throw new \Exception('Invalid character');
+        throw new \Exception('Invalid character: ' . $this->current_char);
     }
 
     /**
@@ -77,6 +87,8 @@ class Lexer
         } else {
             $this->current_char = $this->text[$this->pos];
         }
+        
+        return $this;
     }
 
     public function skip_whitespace()
@@ -100,6 +112,37 @@ class Lexer
         return (int) $result;
     }
     
+    /**
+     * return the next character from the text buffer without incrementing the self.pos variable
+     */
+    public function peek()
+    {
+        $peek_pos = $this->pos + 1;
+        if ($peek_pos > strlen($this->text) - 1) {
+            return null;
+        }
+        
+        return $this->text[$peek_pos];
+    }
+    
+    /**
+     * handle identifiers and reserved keywords
+     */
+    public function id()
+    {
+        $result = '';
+        while ($this->current_char && ctype_alnum($this->current_char)) {
+            $result .= $this->current_char;
+            $this->advance();
+        }
+        
+        if (isset($this->reserved_keywords[$result])) {
+            return $this->reserved_keywords[$result];
+        }
+        
+        return new Token(SIP_ID, $result);
+    }
+
     /**
      * Lexical analyzer (also know as scanner tokenizer)
      *
@@ -151,6 +194,25 @@ class Lexer
             if ($this->current_char == ')') {
                 $this->advance();
                 return new Token(SIP_RPAREN, ')');
+            }
+            
+            if (ctype_alpha($this->current_char)) {
+                return $this->id();
+            }
+            
+            if ($this->current_char == ":" && $this->peek() == "=") {
+                $this->advance()->advance();
+                return new Token(SIP_ASSIGN, ':=');
+            }
+            
+            if ($this->current_char == ';') {
+                $this->advance();
+                return new Token(SIP_SEMI, ';');
+            }
+            
+            if ($this->current_char == '.') {
+                $this->advance();
+                return new Token(SIP_DOT, '.');
             }
 
             $this->error();
@@ -229,6 +291,69 @@ class Num extends AST
     }
 }
 
+/**
+ * represents a 'BEGIN ... END' block
+ */
+class Compound extends AST
+{
+    public $children = [];
+
+    public function __construct()
+    {
+        //
+    }
+}
+
+class Assign extends AST
+{
+    private $left;
+
+    private $op;
+
+    private $right;
+
+    public function __construct($left, $op, $right)
+    {
+        $this->left = $left;
+        $this->op = $op;
+        $this->right = $right;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
+/**
+ * The Variable node is constructed out of ID token
+ */
+class Variable extends AST
+{
+    private $token;
+    
+    private $value;
+
+    public function __construct(Token $token)
+    {
+        $this->token = $token;
+        $this->value = $token->value;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
+/**
+ * yes, we do nothing
+ */
+class NoOp extends AST
+{
+    //
+}
+
 class Parser
 {
     private $lexer;
@@ -247,6 +372,13 @@ class Parser
         throw new \Exception('Invalid syntax');
     }
     
+    public function assert_token_type($expected, $actual)
+    {
+        if ($expected != $actual) {
+            throw new \Exception("Invalid syntax, expected {$expected} but {$actual} found!");
+        }
+    }
+
     /**
      * compare the current token type with the passed token
      * type and if thet match then "eat" the current token,
@@ -255,15 +387,105 @@ class Parser
      */
     public function eat($token_type)
     {
-        if ($this->current_token->type == $token_type) {
-            $this->current_token = $this->lexer->get_next_token();
-        } else {
-            $this->error();
-        }
+        $this->assert_token_type($token_type, $this->current_token->type);
+        $this->current_token = $this->lexer->get_next_token();
     }
     
     /**
-     * factor: (PLUS|MINUS) factor | INTEGER | LPAREN expr RPAREN
+     * program: compound_statement DOT
+     */
+    public function program()
+    {
+        $node = $this->compound_statement();
+        $this->eat(SIP_DOT);
+        return $node;
+    }
+    
+    /**
+     * compound_statement: BEGIN statement_list END
+     */
+    public function compound_statement()
+    {
+        $this->eat(SIP_BEGIN);
+        $nodes = $this->statement_list();
+        $this->eat(SIP_END);
+        
+        $root = new Compound();
+        foreach ($nodes as $node) {
+            $root->children[] = $node;
+        }
+        
+        return $root;
+    }
+    
+    /**
+     * statement_list: statement | statement SEMI statement_list
+     */
+    public function statement_list()
+    {
+        $statement = $this->statement();
+        $results = [$statement];
+        
+        while ($this->current_token->type == SIP_SEMI) {
+            $this->eat(SIP_SEMI);
+            $results[] = $this->statement();
+        }
+
+        if ($this->current_token->type == SIP_ID) {
+            $this->error();
+        }
+        
+        return $results;
+    }
+    
+    /**
+     * statement: compound_statement | assignment_statement | empty
+     */
+    public function statement()
+    {
+        if ($this->current_token->type == SIP_BEGIN) {
+            return $this->compound_statement();
+        }
+        
+        if ($this->current_token->type == SIP_ID) {
+            return $this->assignment_statement();
+        }
+        
+        return $this->empty();
+    }
+    
+    /**
+     * assignment_statement: variable ASSIGN expr
+     */
+    public function assignment_statement()
+    {
+        $left = $this->variable();
+        $token = $this->current_token;
+        $this->eat(SIP_ASSIGN);
+        $right = $this->expr();
+        return new Assign($left, $token, $right);
+    }
+    
+    /**
+     * variable: ID
+     */
+    public function variable()
+    {
+        $node = new Variable($this->current_token);
+        $this->eat(SIP_ID);
+        return $node;
+    }
+    
+    /**
+     * empty:
+     */
+    public function empty()
+    {
+        return new NoOp();
+    }
+
+    /**
+     * factor: (PLUS|MINUS) factor | INTEGER | LPAREN expr RPAREN | variable
      */
     public function factor()
     {
@@ -279,12 +501,13 @@ class Parser
             $node = $this->expr();
             $this->eat(SIP_RPAREN);
             return $node;
+        } else {
+            return $this->variable();
         }
     }
 
     /**
-     * term     : factor ((MUL/DIV) factor)*
-     * factor   : factor: (PLUS|MINUS) factor | INTEGER | LPAREN expr RPAREN
+     * term: factor ((MUL/DIV) factor)*
      */
     public function term()
     {
@@ -305,10 +528,7 @@ class Parser
     }
 
     /**
-     * arithmetic expression parser / interpreter
-     * expr     : term ((PLUS/MINUS) term)*
-     * term     : factor ((MUL/DIV) factor)*
-     * factor   : factor: (PLUS|MINUS) factor | INTEGER | LPAREN expr RPAREN
+     * expr: term ((PLUS/MINUS) term)*
      */
     public function expr()
     {
@@ -330,7 +550,9 @@ class Parser
     
     public function parse()
     {
-        return $this->expr();
+        $node = $this->program();
+        $this->assert_token_type(SIP_EOF, $this->current_token->type);
+        return $node;
     }
 }
 
@@ -362,6 +584,8 @@ class Interpreter extends NodeVisitor
 {
     private $parser;
     
+    private $GLOBAL_SCOPE = [];
+
     public function __construct(Parser $parser)
     {
         $this->parser = $parser;
@@ -394,23 +618,93 @@ class Interpreter extends NodeVisitor
         return $node->value;
     }
     
+    public function visit_compound(Compound $node)
+    {
+        foreach ($node->children as $child) {
+            $this->visit($child);
+        }
+    }
+    
+    public function visit_assign(Assign $node)
+    {
+        $var_name = $node->left->value;
+        $this->GLOBAL_SCOPE[$var_name] = $this->visit($node->right);
+    }
+    
+    public function visit_variable(Variable $var)
+    {
+        $var_name = $var->value;
+        if (isset($this->GLOBAL_SCOPE[$var_name])) {
+            return $this->GLOBAL_SCOPE[$var_name];
+        }
+
+        throw new \Exception("Undefined variable {$var_name}.");
+    }
+
+    public function visit_no_op(NoOp $node)
+    {
+        // do nothing
+    }
+
     public function interpret()
     {
         $tree = $this->parser->parse();
-        return $this->visit($tree);
+        $result = $this->visit($tree);
+        var_dump($this->GLOBAL_SCOPE);
+        return $result;
     }
 }
 
-while (true) {
-    try {
-        fwrite(STDOUT, 'calc> ');
-        $input = fgets(STDIN);
-        $lexer = new Lexer($input);
+class Sip
+{
+    public function interactive()
+    {
+        while (true) {
+            try {
+                fwrite(STDOUT, 'sip> ');
+                $input = fgets(STDIN);
+                $this->exec_string("BEGIN {$input} END.");
+            } catch (Exception $ex) {
+                echo $ex . PHP_EOL;
+            }
+        }
+    }
+
+    public function exec_string($input)
+    {
+        $src = str_replace(array("\r\n", "\r", "\n"), "", $input);
+        $lexer = new Lexer($src);
         $parser = new Parser($lexer);
         $interpreter = new Interpreter($parser);
-        echo $interpreter->interpret() . PHP_EOL;
-        unset($interpreter);
-    } catch (Exception $ex) {
-        echo $ex->getMessage() . PHP_EOL;
+        $interpreter->interpret();
+    }
+
+    public function exec_file($filename)
+    {
+        try {
+            if (!file_exists($filename)) {
+                throw new \Exception("file {$filename} not found!");
+            }
+
+            $file = fopen($filename, 'r');
+            $src = fread($file, filesize($filename));
+            $this->exec_string($src);
+            fclose($file);
+        } catch (Exception $ex) {
+            echo $ex . PHP_EOL;
+        }
+    }
+
+    public function run()
+    {
+        $params = getopt('f::');
+        if (isset($params['f'])) {
+            $this->exec_file($params['f']);
+        } else {
+            $this->interactive();
+        }
     }
 }
+
+$sip = new Sip();
+$sip->run();

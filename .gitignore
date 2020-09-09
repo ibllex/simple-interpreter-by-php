@@ -5,6 +5,7 @@
 .settings
 .idea
 .vscode
+*.pas
 *.suo
 *.ntvs*
 *.njsproj

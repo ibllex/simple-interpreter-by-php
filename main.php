@@ -193,6 +193,24 @@ class BinOp extends AST
     }
 }
 
+class UnaryOp extends AST
+{
+    private $op;
+    
+    private $right;
+
+    public function __construct(Token $op, AST $right)
+    {
+        $this->op = $op;
+        $this->right = $right;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
 class Num extends AST
 {
     private $token;
@@ -245,12 +263,15 @@ class Parser
     }
     
     /**
-     * factor: INTEGER | LPAREN expr RPAREN
+     * factor: (PLUS|MINUS) factor | INTEGER | LPAREN expr RPAREN
      */
     public function factor()
     {
         $token = $this->current_token;
-        if ($token->type == SIP_INTEGER) {
+        if (in_array($token->type, [SIP_PLUS, SIP_MINUS])) {
+            $this->eat($token->type);
+            return new UnaryOp($token, $this->factor());
+        } elseif ($token->type == SIP_INTEGER) {
             $this->eat(SIP_INTEGER);
             return new Num($token);
         } elseif ($token->type == SIP_LPAREN) {
@@ -263,7 +284,7 @@ class Parser
 
     /**
      * term     : factor ((MUL/DIV) factor)*
-     * factor   : INTEGER | LPAREN expr RPAREN
+     * factor   : factor: (PLUS|MINUS) factor | INTEGER | LPAREN expr RPAREN
      */
     public function term()
     {
@@ -287,7 +308,7 @@ class Parser
      * arithmetic expression parser / interpreter
      * expr     : term ((PLUS/MINUS) term)*
      * term     : factor ((MUL/DIV) factor)*
-     * factor   : INTEGER | LPAREN expr RPAREN
+     * factor   : factor: (PLUS|MINUS) factor | INTEGER | LPAREN expr RPAREN
      */
     public function expr()
     {
@@ -359,6 +380,15 @@ class Interpreter extends NodeVisitor
         }
     }
     
+    public function visit_unary_op(UnaryOp $op)
+    {
+        if ($op->op->type == SIP_MINUS) {
+            return - $this->visit($op->right);
+        }
+        
+        return $this->visit($op->right);
+    }
+
     public function visit_num(Num $node)
     {
         return $node->value;

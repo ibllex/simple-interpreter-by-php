@@ -769,9 +769,8 @@ class Parser
 }
 
 /**
- * INTERPRETER
+ * AST visitors (walkers)
  */
-
 class NodeVisitor
 {
     public function visit(AST $node)
@@ -792,17 +791,191 @@ class NodeVisitor
     }
 }
 
+/**
+ * Symbols and symbol table
+ */
+
+class Symbol
+{
+    protected $name;
+
+    protected $type;
+
+    public function __construct($name, $type = null)
+    {
+        $this->name = $name;
+        $this->type = $type;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
+class VariableSymbol extends Symbol
+{
+    public function __toString()
+    {
+        return "<{$this->name}:{$this->type}>";
+    }
+}
+
+class BuiltinTypeSymbol extends Symbol
+{
+    public function __construct($name)
+    {
+        parent::__construct($name);
+    }
+    
+    public function __toString()
+    {
+        return $this->name;
+    }
+}
+
+class SymbolTable
+{
+    private $symbols = [];
+
+    public function __construct()
+    {
+        $this->init_builtins();
+    }
+    
+    private function init_builtins()
+    {
+        $this->define(new BuiltinTypeSymbol(SIP_INTEGER));
+        $this->define(new BuiltinTypeSymbol(SIP_REAL));
+    }
+    
+    public function define(Symbol $symbol)
+    {
+        var_dump("Define: " . $symbol);
+        $this->symbols[$symbol->name] = $symbol;
+    }
+    
+    public function lookup($name)
+    {
+        if (isset($this->symbols[$name])) {
+            return $this->symbols[$name];
+        }
+        
+        return null;
+    }
+}
+
+class SymbolTableBuilder extends NodeVisitor
+{
+    private $symtab;
+    
+    public function __construct()
+    {
+        $this->symtab = new SymbolTable();
+    }
+    
+    public function symbol_table()
+    {
+        return $this->symtab;
+    }
+
+    public function visit_bin_op(BinOp $node)
+    {
+        $this->visit($node->left);
+        $this->visit($node->right);
+    }
+    
+    public function visit_unary_op(UnaryOp $op)
+    {
+        $this->visit($op->right);
+    }
+    
+    public function visit_program(Program $node)
+    {
+        $this->visit($node->block);
+    }
+    
+    public function visit_block(Block $node)
+    {
+        foreach ($node->declarations as $declaration) {
+            $this->visit($declaration);
+        }
+        
+        $this->visit($node->compound_statement);
+    }
+
+    /**
+     * add variable to symbol table
+     */
+    public function visit_var_decl(VarDecl $node)
+    {
+        $type_name = $node->type_node->value;
+        $type_symbol = $this->symtab->lookup($type_name);
+        
+        $var_name = $node->var_node->value;
+        $var_symbol = new VariableSymbol($var_name, $type_symbol);
+
+        $this->symtab->define($var_symbol);
+    }
+
+    public function visit_num(Num $node)
+    {
+        // do nothing here
+    }
+
+    public function visit_no_op(NoOp $node)
+    {
+        // do nothing
+    }
+    
+    public function visit_compound(Compound $node)
+    {
+        foreach ($node->children as $child) {
+            $this->visit($child);
+        }
+    }
+    
+    public function visit_assign(Assign $node)
+    {
+        $var_name = $node->left->value;
+        
+        if (null == $this->symtab->lookup($var_name)) {
+            throw new \Exception("Undefined variable: {$var_name}.");
+        }
+        
+        $this->visit($node->right);
+    }
+
+    public function visit_variable(Variable $var)
+    {
+        $var_name = $var->value;
+
+        if (null == $this->symtab->lookup($var_name)) {
+            throw new \Exception("Undefined variable: {$var_name}.");
+        }
+    }
+}
+
+/**
+ * INTERPRETER
+ */
+
 class Interpreter extends NodeVisitor
 {
-    private $parser;
+    private $tree;
     
     private $GLOBAL_SCOPE = [];
 
-    public function __construct(Parser $parser)
+    public function __construct(AST $tree)
     {
-        $this->parser = $parser;
+        $this->tree = $tree;
     }
     
+    public function global_memory()
+    {
+        return $this->GLOBAL_SCOPE;
+    }
+
     public function visit_bin_op(BinOp $node)
     {
         if ($node->op->type == SIP_PLUS) {
@@ -876,7 +1049,7 @@ class Interpreter extends NodeVisitor
             return $this->GLOBAL_SCOPE[$var_name];
         }
 
-        throw new \Exception("Undefined variable {$var_name}.");
+        throw new \Exception("Undefined variable: {$var_name}.");
     }
 
     public function visit_no_op(NoOp $node)
@@ -886,9 +1059,7 @@ class Interpreter extends NodeVisitor
 
     public function interpret()
     {
-        $tree = $this->parser->parse();
-        $result = $this->visit($tree);
-        print_r($this->GLOBAL_SCOPE);
+        $result = $this->visit($this->tree);
         return $result;
     }
 }
@@ -913,8 +1084,17 @@ class Sip
         $src = str_replace(array("\r\n", "\r", "\n"), "", $input);
         $lexer = new Lexer($src);
         $parser = new Parser($lexer);
-        $interpreter = new Interpreter($parser);
+        $tree = $parser->parse();
+        
+        $symbol_builder = new SymbolTableBuilder();
+        $symbol_builder->visit($tree);
+        
+        var_dump("Symbol table contents: ", $symbol_builder->symbol_table());
+        
+        $interpreter = new Interpreter($tree);
         $interpreter->interpret();
+        
+        var_dump("Run-time Global memory contents: ", $interpreter->global_memory());
     }
 
     public function exec_file($filename)

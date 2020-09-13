@@ -195,6 +195,12 @@ class Lexer
                 $this->skip_whitespace();
                 continue;
             }
+
+            // skip the end of line
+            if ($this->current_char == PHP_EOL) {
+                $this->advance();
+                continue;
+            }
             
             // if the current character is a left curly brace then skip
             // the comments until right curly brace
@@ -1081,7 +1087,8 @@ class Sip
 
     public function exec_string($input)
     {
-        $src = str_replace(array("\r\n", "\r", "\n"), "", $input);
+//        $src = str_replace(array("\r\n", "\r", "\n"), "", $input);
+        $src = $input;
         $lexer = new Lexer($src);
         $parser = new Parser($lexer);
         $tree = $parser->parse();

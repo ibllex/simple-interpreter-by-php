@@ -175,8 +175,8 @@ class Lexer
             $this->advance();
         }
         
-        if (isset($this->reserved_keywords[$result])) {
-            return $this->reserved_keywords[$result];
+        if (isset($this->reserved_keywords[strtoupper($result)])) {
+            return $this->reserved_keywords[strtoupper($result)];
         }
         
         return new Token(SIP_ID, $result);
@@ -380,12 +380,15 @@ class Program extends AST
 class ProcedureDecl extends AST
 {
     private $proc_name;
+    
+    private $params;
 
     private $block_node;
 
-    public function __construct($proc_name, $block_node)
+    public function __construct($proc_name, $params, $block_node)
     {
         $this->proc_name = $proc_name;
+        $this->params = $params;
         $this->block_node = $block_node;
     }
     
@@ -421,9 +424,9 @@ class Block extends AST
  */
 class VarDecl extends AST
 {
-    private $var_node;
+    protected $var_node;
 
-    private $type_node;
+    protected $type_node;
 
     public function __construct(Variable $var_node, Type $type_node)
     {
@@ -435,6 +438,11 @@ class VarDecl extends AST
     {
         return $this->{$name};
     }
+}
+
+class Param extends VarDecl
+{
+    //
 }
 
 /**
@@ -536,7 +544,8 @@ class Parser
     
     public function assert_token_type($expected, $actual)
     {
-        if ($expected != $actual) {
+        // Case insensitive
+        if (strtolower($expected) != strtolower($actual)) {
             throw new \Exception("Invalid syntax, expected {$expected} but {$actual} found!");
         }
     }
@@ -580,7 +589,9 @@ class Parser
     }
     
     /**
-     * declarations: VAR (variable_declaration SEMI)+ | (PROCEDURE ID SEMI block SEMI)* | empty
+     * declarations: VAR (variable_declaration SEMI)+
+     *              | (PROCEDURE ID (LPAREN formal_parameter_list RPAREN)? SEMI block SEMI)*
+     *              | empty
      */
     public function declarations()
     {
@@ -599,9 +610,17 @@ class Parser
             $this->eat(SIP_PROCEDURE);
             $proc_name = $this->current_token->value;
             $this->eat(SIP_ID);
+            $params = [];
+            
+            if ($this->current_token->type == SIP_LPAREN) {
+                $this->eat(SIP_LPAREN);
+                $params = $this->formal_parameter_list();
+                $this->eat(SIP_RPAREN);
+            }
+            
             $this->eat(SIP_SEMI);
             $block = $this->block();
-            $proc_decl = new ProcedureDecl($proc_name, $block);
+            $proc_decl = new ProcedureDecl($proc_name, $params, $block);
             $declarations[] = $proc_decl;
             $this->eat(SIP_SEMI);
         }
@@ -609,6 +628,51 @@ class Parser
         return $declarations;
     }
     
+    /**
+     * formal_parameter_list: formal_parameters
+     *                          |formal_parameters SEMI formal_parameter_list
+     */
+    public function formal_parameter_list()
+    {
+        if ($this->current_token->type != SIP_ID) {
+            return [];
+        }
+        
+        $param_nodes = $this->formal_parameters();
+        
+        while ($this->current_token->type == SIP_SEMI) {
+            $this->eat(SIP_SEMI);
+            $param_nodes = array_merge($param_nodes, $this->formal_parameter_list());
+        }
+        
+        return $param_nodes;
+    }
+    
+    /**
+     * formal_parameters: ID (COMMA ID)* COLON type_spec
+     */
+    public function formal_parameters()
+    {
+        $param_nodes = [];
+        $param_tokens = [$this->current_token];
+        $this->eat(SIP_ID);
+        
+        while ($this->current_token->type == SIP_COMMA) {
+            $this->eat(SIP_COMMA);
+            $param_tokens[] = $this->current_token;
+            $this->eat(SIP_ID);
+        }
+        
+        $this->eat(SIP_COLON);
+        $type_node = $this->type_spec();
+        
+        foreach ($param_tokens as $param_token) {
+            $param_nodes[] = new Param(new Variable($param_token), $type_node);
+        }
+        
+        return $param_nodes;
+    }
+
     /**
      * variable_declaration: ID (COMMA ID)* COLON type_spec
      */
@@ -850,14 +914,6 @@ class Symbol
     }
 }
 
-class VariableSymbol extends Symbol
-{
-    public function __toString()
-    {
-        return "<{$this->name}:{$this->type}>";
-    }
-}
-
 class BuiltinTypeSymbol extends Symbol
 {
     public function __construct($name)
@@ -871,13 +927,55 @@ class BuiltinTypeSymbol extends Symbol
     }
 }
 
-class SymbolTable
+class VariableSymbol extends Symbol
+{
+    public function __toString()
+    {
+        return "<{$this->name}:{$this->type}>";
+    }
+}
+
+class ProcedureSymbol extends Symbol
+{
+    protected $params;
+
+    public function __construct($name, $params = [])
+    {
+        parent::__construct($name);
+        
+        $this->params = $params;
+    }
+    
+    public function addParam($param)
+    {
+        $this->params[] = $param;
+    }
+    public function __toString()
+    {
+        $class_name = get_class($this);
+        return "<{$class_name}(name={$this->name}, params={$this->params})>";
+    }
+}
+
+class ScopedSymbolTable
 {
     private $symbols = [];
+    
+    private $scope_name;
+    
+    private $scope_level;
+    
+    private $enclosing_scope;
 
-    public function __construct()
+    public function __construct($scope_name, $scope_level, $enclosing_scope = null)
     {
-        $this->init_builtins();
+        $this->scope_name = $scope_name;
+        $this->scope_level = $scope_level;
+        $this->enclosing_scope = $enclosing_scope;
+        
+        if ($this->scope_level == 1) {
+            $this->init_builtins();
+        }
     }
     
     private function init_builtins()
@@ -892,28 +990,38 @@ class SymbolTable
         $this->symbols[$symbol->name] = $symbol;
     }
     
-    public function lookup($name)
+    public function lookup($name, $current_scope_only = false)
     {
         if (isset($this->symbols[$name])) {
             return $this->symbols[$name];
         }
         
-        return null;
+        if ($current_scope_only) {
+            return null;
+        }
+        
+        if ($this->enclosing_scope) {
+            return $this->enclosing_scope->lookup($name);
+        }
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
     }
 }
 
-class SymbolTableBuilder extends NodeVisitor
+/**
+ * SemanticAnalyzer
+ */
+
+class SemanticAnalyzer extends NodeVisitor
 {
-    private $symtab;
+    private $current_scope;
     
-    public function __construct()
+    public function current_scope()
     {
-        $this->symtab = new SymbolTable();
-    }
-    
-    public function symbol_table()
-    {
-        return $this->symtab;
+        return $this->current_scope;
     }
 
     public function visit_bin_op(BinOp $node)
@@ -929,7 +1037,15 @@ class SymbolTableBuilder extends NodeVisitor
     
     public function visit_program(Program $node)
     {
+        var_dump("Enter scope: global");
+        $global_scope = new ScopedSymbolTable('global', 1);
+        $this->current_scope = $global_scope;
+
+        // visit subtree
         $this->visit($node->block);
+        
+        $this->current_scope = $this->current_scope->enclosing_scope;
+        var_dump('Leave scope: global');
     }
     
     public function visit_block(Block $node)
@@ -947,17 +1063,42 @@ class SymbolTableBuilder extends NodeVisitor
     public function visit_var_decl(VarDecl $node)
     {
         $type_name = $node->type_node->value;
-        $type_symbol = $this->symtab->lookup($type_name);
+        $type_symbol = $this->current_scope->lookup($type_name);
         
         $var_name = $node->var_node->value;
         $var_symbol = new VariableSymbol($var_name, $type_symbol);
 
-        $this->symtab->define($var_symbol);
+        $this->current_scope->define($var_symbol);
     }
     
     public function visit_procedure_decl(ProcedureDecl $proc)
     {
-        // do nothing here
+        $proc_name = $proc->proc_name;
+        $proc_symbol = new ProcedureSymbol($proc_name);
+        $this->current_scope->define($proc_symbol);
+        
+        var_dump("Enter scope: {$proc_name}");
+        
+        $procedure_scope = new ScopedSymbolTable(
+            $proc_name,
+            $this->current_scope->scope_level + 1,
+            $this->current_scope
+        );
+        
+        $this->current_scope = $procedure_scope;
+        
+        foreach ($proc->params as $param) {
+            $param_type = $this->current_scope->lookup($param->type_node->value);
+            $param_name = $param->var_node->value;
+            $var_symbol = new VariableSymbol($param_name, $param_type);
+            $this->current_scope->define($var_symbol);
+            $proc_symbol->addParam($var_symbol);
+        }
+        
+        $this->visit($proc->block_node);
+        $this->current_scope = $this->current_scope->enclosing_scope;
+
+        var_dump("Leave scope: {$proc_name}");
     }
 
     public function visit_num(Num $node)
@@ -981,7 +1122,7 @@ class SymbolTableBuilder extends NodeVisitor
     {
         $var_name = $node->left->value;
         
-        if (null == $this->symtab->lookup($var_name)) {
+        if (null == $this->current_scope->lookup($var_name)) {
             throw new \Exception("Undefined variable: {$var_name}.");
         }
         
@@ -992,7 +1133,7 @@ class SymbolTableBuilder extends NodeVisitor
     {
         $var_name = $var->value;
 
-        if (null == $this->symtab->lookup($var_name)) {
+        if (null == $this->current_scope->lookup($var_name)) {
             throw new \Exception("Undefined variable: {$var_name}.");
         }
     }
@@ -1134,10 +1275,8 @@ class Sip
         $parser = new Parser($lexer);
         $tree = $parser->parse();
         
-        $symbol_builder = new SymbolTableBuilder();
-        $symbol_builder->visit($tree);
-        
-        var_dump("Symbol table contents: ", $symbol_builder->symbol_table());
+        $semantic_analyzer = new SemanticAnalyzer();
+        $semantic_analyzer->visit($tree);
         
         $interpreter = new Interpreter($tree);
         $interpreter->interpret();

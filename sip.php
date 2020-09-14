@@ -25,6 +25,7 @@ const SIP_RPAREN = 'RPAREN';
 const SIP_BEGIN = 'BEGIN';
 const SIP_END = 'END';
 const SIP_PROGRAM = 'PROGRAM';
+const SIP_PROCEDURE = 'PROCEDURE';
 const SIP_VAR = 'VAR';
 const SIP_DOT = 'DOT';
 const SIP_ASSIGN = 'ASSIGN';
@@ -83,6 +84,7 @@ class Lexer
         $this->reserved_keywords[SIP_END] = new Token(SIP_END, 'END');
         $this->reserved_keywords[SIP_INTEGER] = new Token(SIP_INTEGER, 'INTEGER');
         $this->reserved_keywords[SIP_REAL] = new Token(SIP_REAL, 'REAL');
+        $this->reserved_keywords[SIP_PROCEDURE] = new Token(SIP_PROCEDURE, 'PROCEDURE');
     }
     
     public function error()
@@ -375,6 +377,24 @@ class Program extends AST
     }
 }
 
+class ProcedureDecl extends AST
+{
+    private $proc_name;
+
+    private $block_node;
+
+    public function __construct($proc_name, $block_node)
+    {
+        $this->proc_name = $proc_name;
+        $this->block_node = $block_node;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
 /**
  * Block AST node holdes declarations and a compound statement
  */
@@ -560,7 +580,7 @@ class Parser
     }
     
     /**
-     * declarations: VAR (variable_declaration SEMI)+ | empty
+     * declarations: VAR (variable_declaration SEMI)+ | (PROCEDURE ID SEMI block SEMI)* | empty
      */
     public function declarations()
     {
@@ -573,6 +593,17 @@ class Parser
                 $declarations = array_merge($declarations, $var_decl);
                 $this->eat(SIP_SEMI);
             }
+        }
+        
+        while ($this->current_token->type == SIP_PROCEDURE) {
+            $this->eat(SIP_PROCEDURE);
+            $proc_name = $this->current_token->value;
+            $this->eat(SIP_ID);
+            $this->eat(SIP_SEMI);
+            $block = $this->block();
+            $proc_decl = new ProcedureDecl($proc_name, $block);
+            $declarations[] = $proc_decl;
+            $this->eat(SIP_SEMI);
         }
         
         return $declarations;
@@ -923,6 +954,11 @@ class SymbolTableBuilder extends NodeVisitor
 
         $this->symtab->define($var_symbol);
     }
+    
+    public function visit_procedure_decl(ProcedureDecl $proc)
+    {
+        // do nothing here
+    }
 
     public function visit_num(Num $node)
     {
@@ -1023,6 +1059,11 @@ class Interpreter extends NodeVisitor
     public function visit_var_decl(VarDecl $node)
     {
         // do nothing at this time
+    }
+    
+    public function visit_procedure_decl(ProcedureDecl $proc)
+    {
+        // do nothing here
     }
     
     public function visit_type(Type $node)

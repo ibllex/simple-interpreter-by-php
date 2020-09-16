@@ -91,6 +91,11 @@ class Lexer
     {
         throw new \Exception('Invalid character: ' . $this->current_char);
     }
+    
+    public function get_current_char()
+    {
+        return $this->current_char;
+    }
 
     /**
      * advance the 'pos' pointer and set the current_char variable
@@ -390,6 +395,27 @@ class ProcedureDecl extends AST
         $this->proc_name = $proc_name;
         $this->params = $params;
         $this->block_node = $block_node;
+    }
+    
+    public function __get($name)
+    {
+        return $this->{$name};
+    }
+}
+
+class ProcedureCall extends AST
+{
+    private $proc_name;
+    
+    private $actual_params;
+    
+    private $token;
+
+    public function __construct($proc_name, $actual_params, $token)
+    {
+        $this->proc_name = $proc_name;
+        $this->actual_params = $actual_params;
+        $this->token = $token;
     }
     
     public function __get($name)
@@ -715,6 +741,31 @@ class Parser
         
         return new Type($token);
     }
+    
+    /**
+     * proccall_statement: ID LPAREN (expr (COMMA expr)*)? RPAREN
+     */
+    public function proccall_statement()
+    {
+        $token = $this->current_token;
+        $proce_name = $token->value;
+        
+        $this->eat(SIP_ID);
+        $this->eat(SIP_LPAREN);
+        
+        $actual_params = [];
+        if ($this->current_token->type != SIP_RPAREN) {
+            $actual_params[] = $this->expr();
+        }
+        
+        while ($this->current_token->type == SIP_COMMA) {
+            $this->eat(SIP_COMMA);
+            $actual_params[] = $this->expr();
+        }
+        
+        $this->eat(SIP_RPAREN);
+        return new ProcedureCall($proce_name, $actual_params, $token);
+    }
 
     /**
      * compound_statement: BEGIN statement_list END
@@ -754,7 +805,7 @@ class Parser
     }
     
     /**
-     * statement: compound_statement | assignment_statement | empty
+     * statement: compound_statement | proccall_statement | assignment_statement | empty
      */
     public function statement()
     {
@@ -763,6 +814,10 @@ class Parser
         }
         
         if ($this->current_token->type == SIP_ID) {
+            if ($this->lexer->get_current_char() == '(') {
+                return $this->proccall_statement();
+            }
+            
             return $this->assignment_statement();
         }
         
@@ -953,7 +1008,8 @@ class ProcedureSymbol extends Symbol
     public function __toString()
     {
         $class_name = get_class($this);
-        return "<{$class_name}(name={$this->name}, params={$this->params})>";
+        $params = implode(',', $this->params);
+        return "<{$class_name}(name={$this->name}, params={$params})>";
     }
 }
 
@@ -1075,7 +1131,6 @@ class SemanticAnalyzer extends NodeVisitor
     {
         $proc_name = $proc->proc_name;
         $proc_symbol = new ProcedureSymbol($proc_name);
-        $this->current_scope->define($proc_symbol);
         
         var_dump("Enter scope: {$proc_name}");
         
@@ -1097,8 +1152,15 @@ class SemanticAnalyzer extends NodeVisitor
         
         $this->visit($proc->block_node);
         $this->current_scope = $this->current_scope->enclosing_scope;
-
         var_dump("Leave scope: {$proc_name}");
+        $this->current_scope->define($proc_symbol);
+    }
+    
+    public function visit_procedure_call(ProcedureCall $proc_call)
+    {
+        foreach ($proc_call->actual_params as $param_node) {
+            $this->visit($param_node);
+        }
     }
 
     public function visit_num(Num $node)
@@ -1207,6 +1269,11 @@ class Interpreter extends NodeVisitor
         // do nothing here
     }
     
+    public function visit_procedure_call(ProcedureCall $proc_call)
+    {
+        // do nothing here
+    }
+
     public function visit_type(Type $node)
     {
         // do nothing at this time
